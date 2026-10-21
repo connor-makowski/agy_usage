@@ -109,15 +109,19 @@ def main():
         return
 
     # 1. Model & Reasoning Effort (e.g. Gemini 3.5 Flash (High))
-    model = payload.get("model", {})
-    model_id = model.get("id", "").lower()
-    model_name = model.get("display_name", model.get("id", "Unknown Model"))
+    model = payload.get("model") or {}
+    if isinstance(model, str):
+        model_id = model.lower()
+        model_name = model
+    else:
+        model_id = (model.get("id") or "").lower()
+        model_name = model.get("display_name") or model.get("id") or "Unknown Model"
     
     # Strip any trailing parenthetical effort info (e.g. " (High)") from display name
     model_name = re.sub(r'\s*\([^)]*\)\s*$', '', model_name)
     
     # Extract effort from the nested model dictionary
-    effort = model.get("effort")
+    effort = model.get("effort") if isinstance(model, dict) else None
     if effort and effort.lower() != "none":
         effort_clean = effort.lower()
         if "high" in effort_clean:
@@ -153,18 +157,40 @@ def main():
         ctx_str += f"  │  {mode_color}{mode_val}{COLOR_RESET}"
 
     # 3. Quotas Processing (e.g., Short: ▰▰▰▱▱ 55% (3.5h)  │  Long: ▰▰▱▱▱ 37% (4.2d))
-    quota_keyword = None
-    if "gemini" in model_id:
+    model_name_lower = model_name.lower()
+    is_argon = "argon" in model_id or "argon" in model_name_lower
+    is_gemini = "gemini" in model_id or "gemini" in model_name_lower or is_argon
+
+    if is_gemini:
         quota_keyword = "gemini"
-    elif "claude" in model_id or "3p" in model_id:
+    else:
         quota_keyword = "3p"
 
-    quota = payload.get("quota", {})
+    quota = payload.get("quota") or {}
+    has_argon_bucket = any("argon" in b.lower() for b in quota.keys())
     sorted_buckets = []
     
     for bucket_id, bucket_data in quota.items():
-        if quota_keyword and quota_keyword not in bucket_id.lower():
+        bid = bucket_id.lower()
+        if quota_keyword == "gemini":
+            if "gemini" not in bid and "argon" not in bid:
+                continue
+            if is_argon:
+                # For Gemini Argon models:
+                # If an argon weekly bucket exists, use that instead of the standard gemini-weekly bucket
+                if has_argon_bucket and "weekly" in bid and "argon" not in bid:
+                    continue
+            else:
+                # For non-argon Gemini models:
+                # Ignore argon-specific buckets
+                if "argon" in bid:
+                    continue
+        elif quota_keyword == "3p":
+            if "3p" not in bid:
+                continue
+        elif quota_keyword and quota_keyword not in bid:
             continue
+
         rem_frac = bucket_data.get("remaining_fraction")
         if rem_frac is None:
             continue
